@@ -1,11 +1,20 @@
 from agentic_chatbot_backend import chatbot
 from langchain_core.messages import HumanMessage
+import streamlit as st
 
-user_message= "What is object oriented programming in one line?"
-thread_id = 1
+CONFIG = {'configurable': {'thread_id': 1}}
 
-config = {'configurable': {'thread_id': thread_id}}
+st.title("Agentic Chatbot With LangGraph")
 
-response = chatbot.invoke({'messages':[HumanMessage(content=user_message)]},config=config)
+user_input = st.chat_input("Ask a question to the Agent")
 
-print(response['messages'][-1].content)
+if user_input:
+    with st.chat_message("user"):   
+        st.write(user_input)
+    with st.chat_message("assistant"):
+        response = chatbot.invoke({'messages':[HumanMessage(content=user_input)]},config=CONFIG)
+        st.write(response['messages'][-1].content)
+
+
+
+
