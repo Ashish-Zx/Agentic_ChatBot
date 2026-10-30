@@ -28,13 +28,21 @@ if user_input:
     # Add user message to history
     st.session_state.message_history.append(HumanMessage(content=user_input))
 
-    # display assistant response
+    # display assistant response with streaming
     with st.chat_message("assistant"):
-        response = chatbot.invoke({'messages':[HumanMessage(content=user_input)]},config=CONFIG)
-        st.write(response['messages'][-1].content)
-     
-    # store assistant response in history
-    st.session_state.message_history.append(response['messages'][-1])
+        def generate_response():
+            for message_chunk, metadata in chatbot.stream(
+                {'messages': [HumanMessage(content=user_input)]},
+                config=CONFIG,
+                stream_mode="messages"
+            ):
+                if message_chunk.content:
+                    yield message_chunk.content
+
+        full_response = st.write_stream(generate_response())
+
+    # Store the complete response
+    st.session_state.message_history.append({"role": "assistant", "content": full_response})
 
 
 
