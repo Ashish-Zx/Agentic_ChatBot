@@ -1,3 +1,4 @@
+import os
 from langgraph.graph import StateGraph, START,END
 from typing import TypedDict, Annotated
 from langchain_core.messages import BaseMessage, HumanMessage
@@ -8,7 +9,15 @@ from dotenv import load_dotenv
 from langgraph.checkpoint.memory import MemorySaver
 
 load_dotenv()
-llm= ChatGroq(model="openai/gpt-oss-120b")
+
+# llm= ChatGroq(model="openai/gpt-oss-120b")
+llm = ChatOpenAI(
+    model="mercury-3",
+    temperature=0.75,
+    api_key=os.getenv("INCEPTION_API_KEY"),
+    base_url="https://api.inceptionlabs.ai/v1"
+)
+
 
 from langgraph.graph.message import add_messages
 class ChatState(TypedDict):
