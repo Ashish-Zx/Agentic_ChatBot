@@ -25,6 +25,9 @@ htmlcov/
 .ipynb_checkpoints/
 */.ipynb_checkpoints/*
 Persistence.ipynb
+rag_demo.ipynb
+Chatbot.ipynb
+
 
 # macOS system files
 .DS_Store
@@ -50,3 +53,5 @@ chatbot.db-wal
 faiss_rag_db/
 faiss_index/index.pkl
 faiss_index/index.faiss
+rag_demo.ipynb
+rag_demo.ipynb
