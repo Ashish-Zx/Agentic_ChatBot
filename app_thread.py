@@ -140,7 +140,11 @@ if user_input:
     CONFIG = {
         "configurable": {
             "thread_id": st.session_state["thread_id"]
-        }
+        },
+        "metadata": {
+            "title": st.session_state["thread_id"],
+        },
+        "run_name":"chat_trace"
     }
 
     # display assistant response with streaming
@@ -151,7 +155,7 @@ if user_input:
                 config=CONFIG,
                 stream_mode="messages"
             ):
-                if message_chunk.content:
+                if metadata.get("langgraph_node") == "chat_node" and message_chunk.content:
                     yield message_chunk.content
 
         full_response = st.write_stream(generate_response())

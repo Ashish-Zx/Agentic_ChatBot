@@ -45,3 +45,5 @@ Persistence.ipynb
 .claude/skills/developing-with-streamlit
 .agents
 .claude
+chatbot.db-shm
+chatbot.db-wal
