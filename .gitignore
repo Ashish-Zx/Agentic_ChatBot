@@ -47,3 +47,6 @@ Persistence.ipynb
 .claude
 chatbot.db-shm
 chatbot.db-wal
+faiss_rag_db/
+faiss_index/index.pkl
+faiss_index/index.faiss
