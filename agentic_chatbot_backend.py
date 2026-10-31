@@ -7,6 +7,8 @@ from langchain_core.prompts import ChatMessagePromptTemplate
 from langchain_groq import ChatGroq
 from dotenv import load_dotenv
 from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
+import sqlite3
 
 load_dotenv()
 
@@ -32,8 +34,11 @@ def chat_node(state: ChatState):
  # response store state
   return {'messages': [response]}  
 
+#Connect the database for memory storage
+conn=sqlite3.connect(database="chatbot.db",check_same_thread=False)
 
-checkpoint = MemorySaver()
+#Create the sqlite saver 
+checkpoint = SqliteSaver(connection=conn)
 
 graph= StateGraph(ChatState)
 # Lets add nodes
@@ -46,3 +51,10 @@ graph.add_edge('chat_node' ,END)
 
 
 chatbot = graph.compile(checkpointer=checkpoint)
+
+
+
+
+
+
+
