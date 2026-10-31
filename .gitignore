@@ -23,6 +23,7 @@ htmlcov/
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/
 */.ipynb_checkpoints/*
+Persistence.ipynb
 
 # macOS system files
 .DS_Store
