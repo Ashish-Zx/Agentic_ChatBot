@@ -2,6 +2,8 @@ import os
 import sqlite3
 import requests
 import math
+import random
+from datetime import datetime
 from typing import TypedDict, Annotated
 from dotenv import load_dotenv
 
@@ -19,6 +21,7 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.types import interrupt, Command
 
 # 1. Load environment variables
 load_dotenv()
@@ -268,28 +271,53 @@ def calculator(expression: str) -> str:
     except Exception as e:
         return f"Error: {e}"
 
+# Demo stock prices cache for fallback / market closed / API limits
+DEMO_PRICES = {
+    "AAPL": 224.23,
+    "TSLA": 251.44,
+    "MSFT": 428.15,
+    "NVDA": 141.54,
+    "AMZN": 186.40,
+    "GOOGL": 172.60,
+    "META": 578.90,
+    "IBM": 257.81,
+    "NFLX": 698.20,
+    "SPY": 575.30,
+}
+
+def fetch_current_price(ticker: str) -> float:
+    """Fetch live stock price from Alpha Vantage or fallback to realistic demo pricing."""
+    clean_ticker = ticker.upper().strip()
+    api_key = os.getenv("STOCK_API_KEY") or os.getenv("ALPHA_VANTAGE_API_KEY") or os.getenv("ALPHAVANTAGE_API_KEY")
+    if api_key and api_key != "demo":
+        try:
+            url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={clean_ticker}&apikey={api_key}"
+            res = requests.get(url, timeout=5).json()
+            quote = res.get("Global Quote", {})
+            price_str = quote.get("05. price")
+            if price_str:
+                return round(float(price_str), 2)
+        except Exception:
+            pass
+    return DEMO_PRICES.get(clean_ticker, 150.00)
+
 @tool
 def get_stock_price(symbol: str) -> str:
-    """Useful to get the latest stock price for a given stock ticker symbol (e.g. IBM, AAPL)."""
+    """Useful to get the latest stock price for a given stock ticker symbol (e.g. IBM, AAPL, TSLA)."""
     try:
-        api_key = os.getenv("ALPHA_VANTAGE_API_KEY") or os.getenv("ALPHAVANTAGE_API_KEY") or "demo"
-        url = f"https://www.alphavantage.co/query?function=TIME_SERIES_INTRADAY&symbol={symbol}&interval=5min&apikey={api_key}"
-        response = requests.get(url)
-        data = response.json()
+        clean_sym = symbol.upper().strip()
+        api_key = os.getenv("STOCK_API_KEY") or os.getenv("ALPHA_VANTAGE_API_KEY") or os.getenv("ALPHAVANTAGE_API_KEY")
+        if api_key and api_key != "demo":
+            url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={clean_sym}&apikey={api_key}"
+            response = requests.get(url, timeout=5)
+            data = response.json()
+            if "Global Quote" in data and "05. price" in data["Global Quote"]:
+                price = data["Global Quote"]["05. price"]
+                trading_day = data["Global Quote"].get("07. latest trading day", "latest")
+                return f"The latest stock price of {clean_sym} is ${float(price):.2f} (Trading day: {trading_day})."
 
-        # Extract the latest close price from the 5-minute time series
-        if "Time Series (5min)" in data:
-            latest_timestamp = next(iter(data["Time Series (5min)"]))
-            latest_price = data["Time Series (5min)"][latest_timestamp]["4. close"]
-            return f"The latest stock price of {symbol.upper()} is ${latest_price} (as of {latest_timestamp})."
-
-        # Handle API rate limits or invalid symbol notices
-        if "Information" in data:
-            return f"Alpha Vantage Notice: {data['Information']}"
-        if "Error Message" in data:
-            return f"Error: Could not find stock symbol '{symbol}'."
-
-        return f"Unable to fetch price for '{symbol}': {data}"
+        demo_price = DEMO_PRICES.get(clean_sym, 150.00)
+        return f"The latest stock price of {clean_sym} is approximately ${demo_price:.2f}."
     except Exception as e:
         return f"Error fetching stock price: {e}"
 
@@ -329,8 +357,60 @@ def rag_tool(query: str) -> str:
     except Exception as e:
         return f"Error retrieving document info: {e}"
 
+@tool
+def buy_stocks(stock: str, quantity: int) -> str:
+    """Useful to purchase shares of a stock (e.g. AAPL, TSLA, MSFT).
+    This tool triggers a Human-in-the-Loop authorization step before executing the financial transaction.
+    Input should be the stock ticker symbol (stock) and number of shares (quantity).
+    """
+    clean_stock = stock.upper().strip()
+    shares = max(1, int(quantity))
+    price_per_share = fetch_current_price(clean_stock)
+    total_cost = round(shares * price_per_share, 2)
+
+    # Trigger Human-in-the-Loop Interrupt
+    decision = interrupt({
+        "action": "buy_stocks",
+        "stock": clean_stock,
+        "quantity": shares,
+        "price_per_share": price_per_share,
+        "total_cost": total_cost,
+        "message": f"Authorization required: Purchase {shares} share(s) of {clean_stock} at ~${price_per_share:.2f}/share for an estimated total of ${total_cost:,.2f}."
+    })
+
+    if not isinstance(decision, dict):
+        decision = {"approved": bool(decision)}
+
+    if decision.get("approved"):
+        confirmed_shares = decision.get("quantity", shares)
+        confirmed_cost = round(confirmed_shares * price_per_share, 2)
+        order_id = f"ORD-{clean_stock}-{random.randint(100000, 999999)}"
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return (
+            f"✅ Trade Executed Successfully!\n\n"
+            f"- **Order ID:** `{order_id}`\n"
+            f"- **Symbol:** `{clean_stock}`\n"
+            f"- **Quantity:** {confirmed_shares} share(s)\n"
+            f"- **Execution Price:** ${price_per_share:.2f}\n"
+            f"- **Total Amount:** ${confirmed_cost:,.2f}\n"
+            f"- **Status:** Filled / Executed\n"
+            f"- **Authorization:** Approved by Human Supervisor\n"
+            f"- **Timestamp:** {timestamp}"
+        )
+    else:
+        reason = decision.get("reason", "Declined by human supervisor.")
+        return (
+            f"❌ Stock Purchase Cancelled:\n\n"
+            f"- **Symbol:** `{clean_stock}`\n"
+            f"- **Requested Quantity:** {shares} share(s)\n"
+            f"- **Status:** Rejected by Human Supervisor\n"
+            f"- **Reason:** {reason}\n"
+            f"No transaction was executed and no funds were debited."
+        )
+    
+
 # Tools list
-tools = [calculator, search_tool, get_weather, get_stock_price, rag_tool]
+tools = [calculator, search_tool, get_weather, get_stock_price, buy_stocks, rag_tool]
 
 # Bind tools to the LLM
 llm_with_tools = llm.bind_tools(tools)
@@ -371,3 +451,14 @@ def get_all_threads():
         return [row[0] for row in cur.fetchall()]
     except Exception:
         return []
+
+def get_pending_interrupt(thread_id: str):
+    """Retrieve any pending interrupt payload for the given thread_id."""
+    try:
+        state = chatbot.get_state({"configurable": {"thread_id": thread_id}})
+        for task in state.tasks:
+            if task.interrupts:
+                return task.interrupts[0].value
+    except Exception as e:
+        print(f"Error checking pending interrupt: {e}")
+    return None

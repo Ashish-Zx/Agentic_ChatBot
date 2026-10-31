@@ -2,12 +2,14 @@ import os
 import uuid
 import streamlit as st
 from langchain_core.messages import HumanMessage
+from langgraph.types import Command
 from agentic_chatbot_backend import (
     chatbot,
     get_all_threads,
     ingest_rag_documents,
     clear_rag_documents,
     get_rag_status,
+    get_pending_interrupt,
     UPLOAD_DIR,
 )
 
@@ -26,8 +28,15 @@ def load_thread_messages(thread_id):
     messages = state.values.get("messages", [])
     history = []
     for msg in messages:
-        role = "user" if isinstance(msg, HumanMessage) or getattr(msg, "type", "") == "human" else "assistant"
-        history.append({"role": role, "content": msg.content})
+        if isinstance(msg, HumanMessage) or getattr(msg, "type", "") == "human":
+            history.append({"role": "user", "content": msg.content})
+        elif getattr(msg, "type", "") == "tool":
+            # Tool internal execution messages are not directly displayed as chat bubbles
+            continue
+        else:
+            # Assistant messages: display only if there is text content
+            if getattr(msg, "content", ""):
+                history.append({"role": "assistant", "content": msg.content})
     return history
 
 # get a preview title for a thread (uses the first user message)
@@ -147,12 +156,15 @@ with st.sidebar:
         for thread_id in st.session_state["chat_threads"][::-1]:
             is_active = (thread_id == st.session_state["thread_id"])
             title = get_thread_title(thread_id)
+            has_pending = bool(get_pending_interrupt(thread_id))
+            icon = ":material/notification_important:" if has_pending else ":material/chat:"
+            label = f"{icon} {title}" + (" (Action Needed)" if has_pending else "")
             if st.button(
-                f":material/chat: {title}",
+                label,
                 key=f"thread_btn_{thread_id}",
                 width="stretch",
                 type="primary" if is_active else "secondary",
-                help=f"Thread ID: {thread_id}",
+                help=f"Thread ID: {thread_id}" + (" - Pending Approval" if has_pending else ""),
             ):
                 st.session_state["thread_id"] = thread_id
                 st.session_state["message_history"] = load_thread_messages(thread_id)
@@ -182,8 +194,90 @@ for message in st.session_state["message_history"]:
     with st.chat_message(role):
         st.write(content)
 
+CONFIG = {
+    "configurable": {
+        "thread_id": st.session_state["thread_id"]
+    },
+    "metadata": {
+        "title": st.session_state["thread_id"],
+    },
+    "run_name": "chat_trace"
+}
+
+# Check if there is a pending Human-in-the-Loop Interrupt
+pending_action = get_pending_interrupt(st.session_state["thread_id"])
+
+if pending_action and pending_action.get("action") == "buy_stocks":
+    with st.container(border=True):
+        st.markdown("#### :material/security: Human-in-the-Loop Authorization Required")
+        st.caption("The agent has paused execution. A financial trade requires explicit supervisor approval before execution.")
+
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Stock Symbol", pending_action.get("stock", "N/A"))
+        with col2:
+            st.metric("Quantity", f"{pending_action.get('quantity', 0)} shares")
+        with col3:
+            st.metric("Est. Unit Price", f"${pending_action.get('price_per_share', 0):.2f}")
+        with col4:
+            st.metric("Total Order Cost", f"${pending_action.get('total_cost', 0):,.2f}")
+
+        st.info(pending_action.get("message", "Confirmation needed to execute stock purchase."))
+
+        supervisor_note = st.text_input(
+            "Supervisor note / reason (optional):",
+            key=f"hitl_note_{st.session_state['thread_id']}",
+            placeholder="e.g., Authorized by risk committee, or Declined: excessive exposure"
+        )
+
+        col_approve, col_reject = st.columns(2)
+        with col_approve:
+            if st.button("Approve & Execute Trade", type="primary", icon=":material/check_circle:", width="stretch", key="approve_trade_btn"):
+                with st.chat_message("assistant"):
+                    def resume_stream():
+                        for message_chunk, metadata in chatbot.stream(
+                            Command(resume={"approved": True, "reason": supervisor_note or "Approved by human supervisor"}),
+                            config=CONFIG,
+                            stream_mode="messages"
+                        ):
+                            if metadata.get("langgraph_node") == "chat_node" and message_chunk.content:
+                                yield message_chunk.content
+
+                    full_resumed = st.write_stream(resume_stream())
+
+                if full_resumed:
+                    st.session_state["message_history"].append({
+                        "role": "assistant",
+                        "content": full_resumed
+                    })
+                st.rerun()
+
+        with col_reject:
+            if st.button("Reject Trade", type="secondary", icon=":material/cancel:", width="stretch", key="reject_trade_btn"):
+                with st.chat_message("assistant"):
+                    def resume_stream():
+                        for message_chunk, metadata in chatbot.stream(
+                            Command(resume={"approved": False, "reason": supervisor_note or "Declined by human supervisor"}),
+                            config=CONFIG,
+                            stream_mode="messages"
+                        ):
+                            if metadata.get("langgraph_node") == "chat_node" and message_chunk.content:
+                                yield message_chunk.content
+
+                    full_resumed = st.write_stream(resume_stream())
+
+                if full_resumed:
+                    st.session_state["message_history"].append({
+                        "role": "assistant",
+                        "content": full_resumed
+                    })
+                st.rerun()
+
 # Chat input box
-user_input = st.chat_input("Ask a question to the Agent")
+user_input = st.chat_input(
+    placeholder="Pending authorization required above. Please approve or reject before continuing..." if pending_action else "Ask a question to the Agent (e.g., 'Buy 5 shares of Apple')",
+    disabled=bool(pending_action)
+)
 
 # Run when user submits a message
 if user_input:
@@ -202,16 +296,6 @@ if user_input:
     with st.chat_message("user"):
         st.write(user_input)
 
-    CONFIG = {
-        "configurable": {
-            "thread_id": st.session_state["thread_id"]
-        },
-        "metadata": {
-            "title": st.session_state["thread_id"],
-        },
-        "run_name": "chat_trace"
-    }
-
     with st.chat_message("assistant"):
         def generate_response():
             for message_chunk, metadata in chatbot.stream(
@@ -224,7 +308,12 @@ if user_input:
 
         full_response = st.write_stream(generate_response())
 
-    st.session_state["message_history"].append({
-        "role": "assistant",
-        "content": full_response or ""
-    })
+    if full_response:
+        st.session_state["message_history"].append({
+            "role": "assistant",
+            "content": full_response
+        })
+
+    # If this message triggered a Human-in-the-Loop interrupt, trigger rerun to show approval card immediately
+    if get_pending_interrupt(st.session_state["thread_id"]):
+        st.rerun()
