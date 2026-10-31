@@ -1,4 +1,4 @@
-from agentic_chatbot_backend import chatbot
+from agentic_chatbot_backend import chatbot, get_all_threads
 from langchain_core.messages import HumanMessage
 import streamlit as st
 import uuid
@@ -47,13 +47,13 @@ def get_thread_title(thread_id, max_length=24):
 
 st.title("Agentic Chatbot With LangGraph")
 
+# load existing conversation thread IDs from SQLite database on startup
+if 'chat_threads' not in st.session_state:
+    st.session_state['chat_threads'] = get_all_threads()
+
 # create message_history when the app runs for the first time
 if 'message_history' not in st.session_state:
     st.session_state['message_history'] = []
-
-# create a list for storing all conversation thread IDs
-if 'chat_threads' not in st.session_state:
-    st.session_state['chat_threads'] = []
 
 # store titles/previews for threads
 if 'thread_titles' not in st.session_state:
@@ -70,9 +70,14 @@ def reset_chat():
     st.session_state["thread_titles"][new_thread_id] = "New Chat"
     add_thread(new_thread_id)
 
-# initialize default thread on startup
+# initialize default thread on startup: restore latest conversation from database if available
 if "thread_id" not in st.session_state:
-    reset_chat()
+    if st.session_state['chat_threads']:
+        latest_thread = st.session_state['chat_threads'][-1]
+        st.session_state["thread_id"] = latest_thread
+        st.session_state["message_history"] = load_thread_messages(latest_thread)
+    else:
+        reset_chat()
 
 # create a button for new chat
 if st.sidebar.button("New Chat", width="stretch"):

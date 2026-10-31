@@ -3,10 +3,8 @@ from langgraph.graph import StateGraph, START,END
 from typing import TypedDict, Annotated
 from langchain_core.messages import BaseMessage, HumanMessage
 from langchain_openai import  ChatOpenAI
-from langchain_core.prompts import ChatMessagePromptTemplate
 from langchain_groq import ChatGroq
 from dotenv import load_dotenv
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.checkpoint.sqlite import SqliteSaver
 import sqlite3
 
@@ -38,7 +36,7 @@ def chat_node(state: ChatState):
 conn=sqlite3.connect(database="chatbot.db",check_same_thread=False)
 
 #Create the sqlite saver 
-checkpoint = SqliteSaver(connection=conn)
+checkpoint = SqliteSaver(conn=conn)
 
 graph= StateGraph(ChatState)
 # Lets add nodes
@@ -53,8 +51,11 @@ graph.add_edge('chat_node' ,END)
 chatbot = graph.compile(checkpointer=checkpoint)
 
 
-
-
-
-
-
+def get_all_threads():
+    """Retrieve all distinct thread IDs stored in the SQLite checkpointer database."""
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT thread_id FROM checkpoints GROUP BY thread_id ORDER BY MIN(rowid)")
+        return [row[0] for row in cur.fetchall()]
+    except Exception:
+        return []

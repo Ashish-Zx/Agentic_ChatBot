@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 .streamlit/secrets.toml
+*.db
 
 # Python virtual environment
 .venv/
