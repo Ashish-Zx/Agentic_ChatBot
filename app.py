@@ -1,5 +1,7 @@
 import os
 import uuid
+import asyncio
+import concurrent.futures
 import streamlit as st
 from langchain_core.messages import HumanMessage
 from langgraph.types import Command
@@ -77,6 +79,9 @@ if "message_history" not in st.session_state:
 if "thread_titles" not in st.session_state:
     st.session_state["thread_titles"] = {}
 
+if "deep_research_mode" not in st.session_state:
+    st.session_state["deep_research_mode"] = False
+
 if "thread_id" not in st.session_state:
     if st.session_state["chat_threads"]:
         latest_thread = st.session_state["chat_threads"][-1]
@@ -146,6 +151,29 @@ with st.sidebar:
 
     st.divider()
 
+    # Sidebar: Deep Research Mode
+    st.subheader(":material/manage_search: Deep research", divider="gray")
+    deep_research_mode = st.toggle(
+        "Enable deep research",
+        value=st.session_state["deep_research_mode"],
+        key="deep_research_toggle",
+        help=(
+            "When enabled, your message is treated as a research query. "
+            "A team of AI agents plans searches, queries the web via Tavily, "
+            "writes a detailed report, and sends a Pushover push notification."
+        ),
+    )
+    st.session_state["deep_research_mode"] = deep_research_mode
+
+    if deep_research_mode:
+        st.info(
+            "Deep research is **on**. Your next message will trigger a "
+            "multi-agent web research pipeline and return a full report.",
+            icon=":material/info:",
+        )
+
+    st.divider()
+
     # Sidebar: Conversation threads
     st.subheader("Conversations", divider="gray")
     if st.button("New chat", icon=":material/add:", width="stretch"):
@@ -182,6 +210,14 @@ if current_rag["has_index"]:
     st.caption(f":material/menu_book: **Knowledge base active:** {file_list} ({current_rag['total_chunks']} chunks)")
 else:
     st.caption(":material/info: No documents indexed. Upload documents in the sidebar to ask questions about your files.")
+
+# Deep Research mode banner
+if st.session_state["deep_research_mode"]:
+    st.warning(
+        "**Deep research mode is active.** Type your research topic below and the agent team "
+        "will search the web, analyse results, and write a full report.",
+        icon=":material/manage_search:",
+    )
 
 # Render previous messages from chat history
 for message in st.session_state["message_history"]:
@@ -274,8 +310,15 @@ if pending_action and pending_action.get("action") == "buy_stocks":
                 st.rerun()
 
 # Chat input box
+if st.session_state["deep_research_mode"]:
+    chat_placeholder = "Enter a research topic (e.g. 'latest AI agent frameworks 2026')…"
+elif pending_action:
+    chat_placeholder = "Pending authorization required above. Please approve or reject before continuing..."
+else:
+    chat_placeholder = "Ask a question to the Agent (e.g., 'Buy 5 shares of Apple')"
+
 user_input = st.chat_input(
-    placeholder="Pending authorization required above. Please approve or reject before continuing..." if pending_action else "Ask a question to the Agent (e.g., 'Buy 5 shares of Apple')",
+    placeholder=chat_placeholder,
     disabled=bool(pending_action)
 )
 
@@ -296,17 +339,62 @@ if user_input:
     with st.chat_message("user"):
         st.write(user_input)
 
-    with st.chat_message("assistant"):
-        def generate_response():
-            for message_chunk, metadata in chatbot.stream(
-                {"messages": [HumanMessage(content=user_input)]},
-                config=CONFIG,
-                stream_mode="messages"
-            ):
-                if metadata.get("langgraph_node") == "chat_node" and message_chunk.content:
-                    yield message_chunk.content
+    # ------------------------------------------------------------------ #
+    #  DEEP RESEARCH MODE — multi-agent pipeline                          #
+    # ------------------------------------------------------------------ #
+    if st.session_state["deep_research_mode"]:
+        from deep_research import run_deep_research
 
-        full_response = st.write_stream(generate_response())
+        with st.chat_message("assistant"):
+            status_area = st.empty()
+
+            def _run_research():
+                """Run the async pipeline in a background thread so the event
+                loop owned by this thread stays free."""
+                return asyncio.run(run_deep_research(user_input))
+
+            steps = [
+                "Planning searches…",
+                "Searching the web…",
+                "Writing report…",
+            ]
+            with st.status("Deep research in progress…", expanded=True) as research_status:
+                for step in steps:
+                    st.write(f":material/hourglass_empty: {step}")
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    future = pool.submit(_run_research)
+                    report = future.result()
+
+                research_status.update(
+                    label="Research complete!",
+                    state="complete",
+                    expanded=False,
+                )
+
+            full_response = (
+                f"**Summary:** {report.short_summary}\n\n"
+                f"{report.markdown_report}\n\n"
+                f"**Follow-up questions:**\n"
+                + "\n".join(f"- {q}" for q in report.follow_up_questions)
+            )
+            st.markdown(full_response)
+
+    # ------------------------------------------------------------------ #
+    #  NORMAL CHAT MODE — LangGraph chatbot                               #
+    # ------------------------------------------------------------------ #
+    else:
+        with st.chat_message("assistant"):
+            def generate_response():
+                for message_chunk, metadata in chatbot.stream(
+                    {"messages": [HumanMessage(content=user_input)]},
+                    config=CONFIG,
+                    stream_mode="messages"
+                ):
+                    if metadata.get("langgraph_node") == "chat_node" and message_chunk.content:
+                        yield message_chunk.content
+
+            full_response = st.write_stream(generate_response())
 
     if full_response:
         st.session_state["message_history"].append({
